@@ -152,6 +152,47 @@ def threshold_section(cfg: dict) -> None:
         cfg[key] = ask_bool(label, cfg[key])
 
 
+def ask_float(name: str, current: float, low: float = 1.0, high: float = 1000.0) -> float:
+    while True:
+        value = ask(name, str(current))
+        if not value:
+            return current
+        try:
+            result = float(value)
+            if low <= result <= high:
+                return result
+        except ValueError:
+            pass
+        print('Enter a number between %s and %s.' % (low, high))
+
+
+def alert_policy_section(cfg: dict) -> None:
+    print('\nEmergency notification policy (all values are stored in config.json)')
+    policy = cfg['alert_policy']
+    for key, label in (
+        ('root_login_untrusted', 'Notify on root login from an untrusted source'),
+        ('ssh_spike', 'Notify on sudden SSH failure surge'),
+        ('required_container_down', 'Notify when a required container is stopped or missing'),
+        ('required_container_unhealthy', 'Notify when a required container is unhealthy'),
+        ('other_container_unhealthy', 'Notify when any other container is unhealthy'),
+        ('required_service_inactive', 'Notify when a required systemd service is inactive'),
+        ('docker_daemon_unavailable', 'Notify when Docker monitoring is unavailable'),
+        ('disk_critical', 'Notify when disk usage reaches the critical threshold'),
+        ('new_public_port', 'Notify when a new unapproved public Docker port appears'),
+        ('custom_log_rule', 'Notify for matching custom Docker log rules'),
+        ('http_probe_2xx', 'Notify about suspicious HTTP paths returning 2xx'),
+        ('http_probe_volume', 'Notify about unusually many suspicious HTTP requests'),
+        ('notify_on_recovery', 'Send a separate email when an ongoing incident recovers'),
+    ):
+        policy[key] = ask_bool(label, policy[key])
+    policy['minimum_level'] = ask('Minimum emergency level (HIGH/WARN)', policy['minimum_level']).upper()
+    policy['ssh_spike_trigger_count'] = ask_int('SSH failures per alert window to consider a surge', policy['ssh_spike_trigger_count'])
+    policy['ssh_spike_recovery_count'] = ask_int('SSH failures at or below which a surge is resolved', policy['ssh_spike_recovery_count'], low=0)
+    policy['ssh_spike_increase_factor'] = ask_float('Minimum increase relative to previous alert window', policy['ssh_spike_increase_factor'])
+    policy['disk_critical_percent'] = ask_int('Critical disk percentage (notification)', policy['disk_critical_percent'], high=100)
+    policy['disk_recovery_percent'] = ask_int('Disk percentage at or below which the incident resolves', policy['disk_recovery_percent'], high=100)
+
+
 def pattern_section(cfg: dict) -> None:
     print('\nEnvironment-specific matching and exclusions')
     cfg['trusted_ssh_cidrs'] = ask_list('Trusted SSH source CIDRs (suppress non-root login notices only)', cfg['trusted_ssh_cidrs'])
@@ -212,13 +253,14 @@ def interactive(config_path: Path, initial: bool) -> int:
         email_section(cfg, staged_secret)
         monitor_section(cfg)
         threshold_section(cfg)
+        alert_policy_section(cfg)
         pattern_section(cfg)
         policy_section(cfg)
     else:
         while True:
             print('\n1) SMTP and recipients   2) Monitoring sources   3) Thresholds')
             print('4) Regex rules/exclusions   5) Severity policy   6) Preview (redacted)')
-            print('7) Save and exit   0) Exit without saving')
+            print('7) Emergency notification policy   8) Save and exit   0) Exit without saving')
             choice = input('Select: ').strip()
             if choice == '1':
                 email_section(cfg, staged_secret)
@@ -233,6 +275,8 @@ def interactive(config_path: Path, initial: bool) -> int:
             elif choice == '6':
                 show(cfg)
             elif choice == '7':
+                alert_policy_section(cfg)
+            elif choice == '8':
                 break
             elif choice == '0':
                 return 0

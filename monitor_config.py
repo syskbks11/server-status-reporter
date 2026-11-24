@@ -61,6 +61,27 @@ DEFAULTS = {
     'severity_overrides': {},
     'warn_on_privileged_docker': True,
     'warn_on_docker_socket_mount': True,
+    'alert_policy': {
+        'minimum_level': 'HIGH',
+        'notify_on_recovery': False,
+        'root_login_untrusted': True,
+        'ssh_spike': True,
+        'ssh_spike_trigger_count': 100,
+        'ssh_spike_recovery_count': 30,
+        'ssh_spike_increase_factor': 3.0,
+        'required_container_down': True,
+        'required_container_unhealthy': True,
+        'other_container_unhealthy': False,
+        'required_service_inactive': True,
+        'docker_daemon_unavailable': True,
+        'disk_critical': True,
+        'disk_critical_percent': 95,
+        'disk_recovery_percent': 90,
+        'new_public_port': True,
+        'custom_log_rule': True,
+        'http_probe_2xx': False,
+        'http_probe_volume': False,
+    },
 }
 
 RULE_LABELS = {
@@ -68,6 +89,7 @@ RULE_LABELS = {
     'ssh_password': ('SSH password authentication', 'ssh:password:'),
     'ssh_login': ('SSH successful authentication', 'ssh:login:'),
     'ssh_failures': ('SSH failure threshold', 'ssh:failures'),
+    'ssh_spike': ('Sudden SSH failure surge', 'ssh:spike'),
     'http_probe_success': ('HTTP probe returning 2xx', ':probe2xx'),
     'http_probes': ('HTTP probe threshold', ':probes'),
     'http_5xx': ('HTTP 5xx threshold', ':http5xx'),
@@ -78,6 +100,7 @@ RULE_LABELS = {
     'docker_missing': ('Previously running Docker container missing', 'docker:missing:'),
     'docker_restart': ('Docker restart count increase', 'docker:restart:'),
     'docker_new_port': ('New external Docker port', 'docker:new-exposure:'),
+    'docker_public_port': ('Unapproved Docker public port', 'docker:public-port:'),
     'docker_privileged': ('Privileged Docker container', 'docker:privileged:'),
     'docker_socket': ('Docker socket mount', 'docker:socket:'),
     'docker_app_errors': ('Docker application error threshold', 'docker:app-errors'),
@@ -188,6 +211,28 @@ def validate(config: dict, require_email: bool = True) -> dict:
         for name, value in cfg['severity_overrides'].items()
     ):
         raise ValueError('Invalid severity override')
+    policy = cfg['alert_policy']
+    default_policy = DEFAULTS['alert_policy']
+    if not isinstance(policy, dict) or set(policy) != set(default_policy):
+        # Old installations may have a partial policy; fill missing keys in memory.
+        if not isinstance(policy, dict) or set(policy) - set(default_policy):
+            raise ValueError('Unknown emergency notification policy keys')
+        policy = {**default_policy, **policy}
+        cfg['alert_policy'] = policy
+    for key, default in default_policy.items():
+        value = policy[key]
+        if type(default) is bool and type(value) is not bool:
+            raise ValueError('Emergency notification option must be boolean: ' + key)
+        if type(default) is int and (type(value) is not int or not 0 <= value <= 65535):
+            raise ValueError('Invalid emergency notification threshold: ' + key)
+        if type(default) is float and (type(value) not in (int, float) or not 1 <= value <= 1000):
+            raise ValueError('Invalid SSH surge increase factor')
+    if policy['minimum_level'] not in ('HIGH', 'WARN'):
+        raise ValueError('Emergency notification minimum level must be HIGH or WARN')
+    if policy['ssh_spike_trigger_count'] <= policy['ssh_spike_recovery_count']:
+        raise ValueError('SSH surge recovery threshold must be below the trigger threshold')
+    if not 1 <= policy['disk_recovery_percent'] < policy['disk_critical_percent'] <= 100:
+        raise ValueError('Disk recovery percentage must be below the critical percentage')
     if not isinstance(cfg['application_log_rules'], list):
         raise ValueError('Application rules must be a list')
     names = set()

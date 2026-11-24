@@ -1,0 +1,18 @@
+name: Tests and publication scan
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Run unit tests
+        run: python3 -m unittest discover -s tests -v
+      - name: Check source for obvious identifying details
+        run: python3 privacy_check.py
+      - name: Validate shell syntax
+        run: bash -n install.sh uninstall.sh bin/server-security-report bin/server-security-setup

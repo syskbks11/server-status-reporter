@@ -24,6 +24,7 @@ report.previous_counts = {
     'Local filesystems at or above 90%': 0,
 }
 report.add('HIGH', 'docker:unhealthy:app-a', 'Unhealthy Docker container: app-a')
+report.findings[-1].ongoing_since = '2026-01-01T07:00:00+00:00'
 report.add('WARN', 'ssh:failures', 'SSH failures: 46 log entries; top source: 203.0.113.20 (31)')
 report.record_ip('203.0.113.20', 'ssh_failed', 31)
 report.record_ip('192.0.2.10', 'ssh_success', 2)

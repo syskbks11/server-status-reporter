@@ -26,3 +26,23 @@ sudo systemctl enable --now security-report-daily.timer security-report-alert.ti
 - GitHubユーザー名・メールアドレス・コミット作成者・公開組織の情報から、投稿者が特定される可能性を考慮する。
 
 テストは `python3 -m unittest discover -s tests -v`、実行ログは `journalctl -u security-report-daily.service` などで確認できます。
+
+## 緊急通知・日報のルール（v4）
+
+通常のSSH認証失敗とHTTPの不審アクセスは日報に集計し、原則として緊急メールは送信しません。緊急メールは、信頼済みネットワーク以外からのrootログイン、設定した条件を満たすSSH攻撃の急増、重要コンテナやsystemdサービスの異常、ディスク使用率の危険域到達などに限定します。個別の監視対象・通知条件は各サーバーで設定してください。
+
+継続中の異常は`/var/lib/server-security-report/state.json`で管理します。15分ごとの監視で同じ異常が続いていても再送せず、翌日以降の日報には毎日掲載します。日報に同じ異常がすでに含まれる場合は重複して掲載しません。初回検知時刻も表示します。
+
+異常の解消時は通常メールを送信せず、対話式設定の`notify_on_recovery`を有効にした場合だけ復旧通知を送信します。監視失敗などにより復旧が検証できない場合は、既存の異常状態を維持します。
+
+**通知条件・閾値の保存先は1つのファイルです。** `/etc/server-security-report/config.json`内の`alert_policy`にまとまっています。rootのみ読み取り可能なためGitHubには含まれません。対話式CUIで設定するには以下を実行し、**7) Emergency notification policy**を選択します。
+
+```bash
+sudo server-security-setup --configure
+sudo server-security-setup --validate
+sudo server-security-report --mode alert --dry-run
+```
+
+`ssh_spike_trigger_count`と`ssh_spike_recovery_count`は15分あたりの失敗件数を基準とする発生・解除閾値です。`ssh_spike_increase_factor`は直前の監視区間に対する倍率です。`disk_critical_percent`と`disk_recovery_percent`はディスクの危険域到達・解除の基準値です。発生閾値と解除閾値に差を設けることで、境界付近での通知の繰り返しを防ぎます。
+
+既存のv3から更新する場合、保存済みSMTP設定は維持されます。v4の緊急通知条件には初期値が適用されるため、定期監視を有効にする前に必ずメニュー7で確認してください。以前の状態ファイルからは通知の継続状態を引き継がないので、初回の監視時に既存の異常について1回通知が発生する可能性があります。

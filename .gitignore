@@ -1,0 +1,29 @@
+# Python generated files
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+
+# Deployment files and local test data
+config.json
+config.*.json
+*.local.json
+*.secret
+*.password
+config.json
+smtp-password
+gmail-app-password
+state.json
+.env
+.env.*
+secrets/
+private/
+state/
+reports/
+*.log
+*.sqlite3
+
+# Generated artifacts
+*.zip
+*.tar.gz
+.DS_Store

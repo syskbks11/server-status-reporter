@@ -142,6 +142,7 @@ REMEDIATION_GUIDANCE = (
     ("ssh:password:", "Verify the login; prefer SSH keys and review password-authentication policy."),
     ("ssh:login:", "Confirm that this login is expected and its source is authorized."),
     ("ssh:failures", "Review the SSH failure sources and rate limits; confirm SSHGuard or Fail2ban is working."),
+    ("ssh:spike", "Investigate the sudden rise in SSH authentication failures and verify the connection guard is active."),
     ("host-web:probe2xx", "Inspect the matching reverse-proxy access logs and application response; HTTP 2xx is not proof of compromise."),
     ("docker-web:probe2xx", "Inspect the container and reverse-proxy logs for the paths; HTTP 2xx alone is not proof of compromise."),
     ("host-web:probes", "Check whether the same sources repeatedly probe sensitive paths; review access restrictions."),
@@ -155,6 +156,7 @@ REMEDIATION_GUIDANCE = (
     ("docker:missing:", "Verify whether deployment/recreation was planned; inspect Docker events and deployment logs."),
     ("docker:restart:", "Inspect container exit codes and logs for crashes or repeated restarts."),
     ("docker:new-exposure:", "Review published port bindings and firewall rules; restrict unintended external exposure."),
+    ("docker:public-port:", "Check published port bindings; restrict any unapproved non-loopback exposure."),
     ("docker:privileged:", "Confirm privileged mode is necessary; remove unnecessary container privileges."),
     ("docker:socket:", "Verify the Docker socket mount is necessary; it can grant control over the host Docker daemon."),
     ("docker:app-errors", "Review the affected application logs and correlate errors with user requests or deployments."),
@@ -182,6 +184,7 @@ class Finding:
     message: str
     persistent: bool = False
     action: str = ""
+    ongoing_since: str = ""
 
 
 @dataclass
@@ -199,6 +202,9 @@ class Report:
     coverage: list[str] = field(default_factory=list)
     ip_activity: dict[str, collections.Counter] = field(default_factory=dict)
     severity_overrides: dict[str, str] = field(default_factory=dict)
+    alert_policy: dict = field(default_factory=dict)
+    observations: dict = field(default_factory=dict)
+    recoveries: list[str] = field(default_factory=list)
 
     def add(self, level: str, key: str, message: str, persistent: bool = False) -> None:
         for rule_id, (_, prefix) in RULE_LABELS.items():
@@ -248,7 +254,7 @@ class Report:
         }[self.status]
 
     def subject(self) -> str:
-        prefix = "SECURITY ALERT" if self.mode == "alert" else "Daily Security"
+        prefix = "SECURITY RECOVERY" if self.mode == "alert" and self.recoveries and not self.findings else ("SECURITY ALERT" if self.mode == "alert" else "Daily Security")
         return f"[{prefix}][{self.status}] {self.host} - {self.end:%Y-%m-%d %H:%M}"
 
     def summary_keys(self) -> list[str]:
@@ -331,10 +337,14 @@ class Report:
         lines.extend(["", "FINDINGS AND NEXT STEPS"])
         if self.findings:
             for finding in self.sorted_findings():
-                lines.append(f"  [{finding.level}] {finding.message}")
+                suffix = f" (ongoing since {finding.ongoing_since})" if finding.ongoing_since else ""
+                lines.append(f"  [{finding.level}] {finding.message}{suffix}")
                 lines.append(f"    Next step: {finding.action}")
         else:
             lines.append("  No actionable findings")
+        if self.recoveries:
+            lines.extend(["", "RECOVERED INCIDENTS"])
+            lines.extend(f"  {item}" for item in self.recoveries)
         lines.extend(["", "IP ACTIVITY - TOP SOURCES"])
         rows = self.ip_rows()
         lines.extend(f"  {address}: {detail}" for address, detail in rows)
@@ -378,7 +388,9 @@ class Report:
         findings = ''.join(
             '<li style="margin:9px 0">'
             f'<strong style="color:{"#a11" if f.level == "HIGH" else "#926000"}">[{esc(f.level)}]</strong> '
-            f'{esc(f.message)}<div style="color:#444;font-size:13px">Next step: {esc(f.action)}</div></li>'
+            f'{esc(f.message)}'
+            f'{" <span style=\"color:#666\">(ongoing since " + esc(f.ongoing_since) + ")</span>" if f.ongoing_since else ""}'
+            f'<div style="color:#444;font-size:13px">Next step: {esc(f.action)}</div></li>'
             for f in self.sorted_findings()
         ) or '<li>No actionable findings</li>'
         sources = ''.join(
@@ -413,6 +425,7 @@ class Report:
             + ''.join(metric_rows) + '</tbody></table>'
             + comparison
             + '<h3>Findings and next steps</h3><ul style="padding-left:20px">' + findings + '</ul>'
+            + ('<h3>Recovered incidents</h3><ul>' + ''.join('<li>' + esc(v) + '</li>' for v in self.recoveries) + '</ul>' if self.recoveries else '')
             + '<h3>IP activity - top sources</h3><table style="border-collapse:collapse;width:100%">'
             + sources + '</table>'
             + sections + coverage
@@ -588,7 +601,9 @@ def analyze_ssh(start: dt.datetime, end: dt.datetime, report: Report, cfg: dict)
         report.add("WARN", "ssh:failures", f"SSH failures: {sum(failures.values())} log entries; top sources: {top(failures, 3)}")
     for user, method, address in successes:
         if user == "root":
-            report.add("HIGH", f"ssh:root:{address}:{method}", f"Direct root SSH login from {address} ({method})")
+            trusted = is_trusted_ssh_source(address, cfg)
+            report.add("WARN" if trusted else "HIGH", f"ssh:root:{address}:{method}",
+                       f"Direct root SSH login from {address} ({method})" + (" [trusted source]" if trusted else " [untrusted source]"))
         elif is_trusted_ssh_source(address, cfg):
             continue
         elif method != "publickey" and cfg.get("alert_on_ssh_password_success", True):
@@ -636,9 +651,9 @@ def analyze_web(stats: WebStats, name: str, report: Report, cfg: dict, prefix: s
             lines.append(f"Top suspicious paths: {top(stats.paths, 5)}")
         report.section(name + " HTTP", lines)
     if stats.probe_2xx:
-        report.add("WARN", f"{prefix}:probe2xx", f"{name}: {stats.probe_2xx} suspicious path requests returned HTTP 2xx; investigate target paths")
+        report.add("WARN", f"{prefix}:probe2xx", f"{name}: {stats.probe_2xx} suspicious path requests returned HTTP 2xx; investigate target paths", persistent=True)
     if stats.probes >= int(cfg.get("web_probe_threshold", 20)):
-        report.add("WARN", f"{prefix}:probes", f"{name}: {stats.probes} requests matched common exploit/scanner URL patterns")
+        report.add("WARN", f"{prefix}:probes", f"{name}: {stats.probes} requests matched common exploit/scanner URL patterns", persistent=True)
     if stats.errors_5xx >= int(cfg.get("web_5xx_threshold", 50)):
         report.add("WARN", f"{prefix}:http5xx", f"{name}: {stats.errors_5xx} HTTP 5xx responses")
 
@@ -658,7 +673,11 @@ def parse_docker(config: dict, report: Report, previous: dict, start: dt.datetim
         return {}
     ids = ids_result.output.split()
     if not ids:
+        report.observations["docker_query_ok"] = True
         report.set_metric("Docker containers (running/stopped/unhealthy)", "0/0/0")
+        for required in config.get("required_containers", []):
+            report.add("HIGH", f"docker:required-missing:{required}",
+                       f"Required Docker container is missing: {required}", persistent=True)
         return {}
     inspect = command(["docker", "inspect", *ids], timeout=30, max_bytes=8_000_000)
     if not inspect.ok:
@@ -670,6 +689,7 @@ def parse_docker(config: dict, report: Report, previous: dict, start: dt.datetim
     except json.JSONDecodeError:
         report.add("HIGH", "docker:inspect-invalid", "Docker inspect returned invalid or incomplete JSON", persistent=True)
         return {}
+    report.observations["docker_query_ok"] = True
     ignore = set(config.get("ignore_containers", []))
     states = {}
     running = stopped = unhealthy = 0
@@ -706,7 +726,8 @@ def parse_docker(config: dict, report: Report, previous: dict, start: dt.datetim
             attention.append(f"{name}: status={status}, health={health}, restarts={restart_count}")
         if status == "running" and health == "unhealthy":
             report.add("HIGH", f"docker:unhealthy:{name}", f"Unhealthy Docker container: {name}", persistent=True)
-        if previous_item.get("status") == "running" and status != "running":
+        if (previous_item.get("status") == "running" and status != "running"
+                and name not in config.get("required_containers", [])):
             report.add("HIGH", f"docker:stopped:{name}", f"Docker container stopped: {name} ({status})", persistent=True)
         if previous_item.get("id") == c_id and restart_count > int(previous_item.get("restarts", 0)):
             delta = restart_count - int(previous_item.get("restarts", 0))
@@ -722,16 +743,17 @@ def parse_docker(config: dict, report: Report, previous: dict, start: dt.datetim
                 binds.append(entry)
                 if host_ip not in ("127.0.0.1", "::1", "[::1]"):
                     exposed.append(entry)
-        old_exposed = set(previous_item.get("exposed", []))
         current_exposed = {b for b in binds if b in exposed}
         states[name]["exposed"] = sorted(current_exposed)
-        new_exposure = {
-            item for item in current_exposed - old_exposed
+        unapproved_ports = {
+            item for item in current_exposed
             if item.split(' -> ', 1)[0].rsplit(':', 1)[-1].isdigit()
             if int(item.split(' -> ', 1)[0].rsplit(':', 1)[-1]) not in config.get('allowed_public_ports', [])
         }
-        if previous_containers and new_exposure:
-            report.add("HIGH", f"docker:new-exposure:{name}", f"New non-loopback Docker port binding: {top(collections.Counter({v: 1 for v in new_exposure}), 2)}")
+        if unapproved_ports:
+            report.add("HIGH", f"docker:public-port:{name}",
+                       f"Unapproved non-loopback Docker port: {top(collections.Counter({v: 1 for v in unapproved_ports}), 2)}",
+                       persistent=True)
         host_cfg = container.get("HostConfig") or {}
         if host_cfg.get("Privileged"):
             privileged.append(f"{name}: privileged=true")
@@ -768,7 +790,8 @@ def parse_docker(config: dict, report: Report, previous: dict, start: dt.datetim
         elif states[required]["status"] != "running":
             report.add("HIGH", f"docker:required-stopped:{required}", f"Required Docker container is not running: {required}", persistent=True)
     for old_name, old_item in previous_containers.items():
-        if old_name not in states and old_item.get("status") == "running" and old_name not in ignore:
+        if (old_name not in states and old_item.get("status") == "running"
+                and old_name not in ignore and old_name not in config.get("required_containers", [])):
             report.add("HIGH", f"docker:missing:{old_name}", f"Previously running Docker container is missing: {old_name}", persistent=True)
     report.set_metric("Docker containers (running/stopped/unhealthy)", f"{running}/{stopped}/{unhealthy}")
     report.set_metric("Docker non-loopback published port bindings", len(exposed))
@@ -789,7 +812,7 @@ def parse_docker(config: dict, report: Report, previous: dict, start: dt.datetim
     analyze_web(stats, "Docker", report, config, "docker-web")
     for (rule_name, severity, name), count in custom_hits.items():
         report.add(severity, f'docker:custom:{rule_name}:{name}',
-                   f'Custom Docker log rule {rule_name} matched {count} line(s) in {name}')
+                   f'Custom Docker log rule {rule_name} matched {count} line(s) in {name}', persistent=True)
     if sum(app_errors.values()) >= int(config.get("app_error_threshold", 30)):
         report.add("WARN", "docker:app-errors", f"Docker application error indicators: {sum(app_errors.values())}; containers: {top(app_errors, 3)}")
     return states
@@ -815,6 +838,7 @@ def analyze_disks(report: Report, threshold: int) -> None:
         report.coverage.append("Disk usage query failed")
         return
     lines = []
+    report.observations["disk_percentages"] = {}
     for line in result.output.splitlines()[1:]:
         columns = line.split(maxsplit=6)
         if len(columns) < 7:
@@ -827,12 +851,200 @@ def analyze_disks(report: Report, threshold: int) -> None:
         except ValueError:
             continue
         lines.append((percent, mount, device))
-        if percent >= threshold:
-            report.add("WARN", f"disk:{mount}", f"Disk usage {percent}% on {mount} ({device})", persistent=True)
+        report.observations["disk_percentages"][mount] = percent
+        critical = report.alert_policy.get("disk_critical_percent", 95)
+        if percent >= threshold or percent >= critical:
+            report.add("HIGH" if percent >= critical else "WARN", f"disk:{mount}",
+                       f"Disk usage {percent}% on {mount} ({device})", persistent=True)
     lines.sort(reverse=True)
     report.set_metric(f"Local filesystems at or above {threshold}%", sum(p >= threshold for p, _, _ in lines))
     report.section("Local disk usage", [f"{p}% {mount} ({device})" for p, mount, device in lines[:5]])
 
+
+
+@dataclass
+class AlertDecision:
+    new_findings: list[Finding]
+    recoveries: list[str]
+    active_incidents: dict[str, dict]
+
+
+def incident_identity(finding: Finding, cfg: dict) -> str:
+    """Map alternative symptoms of one incident onto a stable identity."""
+    key = finding.key
+    required = set(cfg.get("required_containers", []))
+    for prefix in ("docker:required-stopped:", "docker:required-missing:"):
+        if key.startswith(prefix):
+            return "docker:required:" + key[len(prefix):]
+    if key.startswith("docker:unhealthy:"):
+        name = key[len("docker:unhealthy:"):]
+        if name in required:
+            return "docker:required:" + name
+    if key in ("docker:cli-missing", "docker:unavailable", "docker:inspect", "docker:inspect-invalid"):
+        return "docker:daemon"
+    return key
+
+
+def selected_alert_incidents(report: Report, cfg: dict) -> dict[str, Finding]:
+    """Only explicitly enabled actionable findings are eligible for an email."""
+    policy = cfg.get("alert_policy", DEFAULTS["alert_policy"])
+    selected = {}
+    for finding in report.sorted_findings():
+        key = finding.key
+        if finding.level != "HIGH" and not (policy["minimum_level"] == "WARN" and finding.level == "WARN"):
+            continue
+        enabled = False
+        if key.startswith("ssh:root:"):
+            enabled = policy["root_login_untrusted"] and "[untrusted source]" in finding.message
+        elif key == "ssh:spike":
+            enabled = policy["ssh_spike"]
+        elif key.startswith(("docker:required-stopped:", "docker:required-missing:")):
+            enabled = policy["required_container_down"]
+        elif key.startswith("docker:unhealthy:"):
+            name = key[len("docker:unhealthy:"):]
+            enabled = (policy["required_container_unhealthy"] if name in cfg.get("required_containers", [])
+                       else policy["other_container_unhealthy"])
+        elif key.startswith("service:"):
+            enabled = policy["required_service_inactive"]
+        elif key.startswith(("docker:unavailable", "docker:cli-missing", "docker:inspect")):
+            enabled = policy["docker_daemon_unavailable"]
+        elif key.startswith("disk:"):
+            mount = key[len("disk:"):]
+            value = report.observations.get("disk_percentages", {}).get(mount, -1)
+            enabled = policy["disk_critical"] and value >= policy["disk_critical_percent"]
+        elif key.startswith("docker:public-port:"):
+            enabled = policy["new_public_port"]
+        elif key.startswith("docker:custom:"):
+            enabled = policy["custom_log_rule"]
+        elif key.endswith(":probe2xx"):
+            enabled = policy["http_probe_2xx"]
+        elif key.endswith(":probes"):
+            enabled = policy["http_probe_volume"]
+        if enabled:
+            identity = incident_identity(finding, cfg)
+            if identity not in selected:
+                selected[identity] = finding
+    return selected
+
+
+def incident_policy_enabled(identity: str, cfg: dict) -> bool:
+    """Disable notifications for categories that a host no longer monitors."""
+    policy = cfg.get("alert_policy", DEFAULTS["alert_policy"])
+    if identity == "ssh:spike":
+        return cfg.get("enable_ssh", True) and policy["ssh_spike"] and cfg.get("severity_overrides", {}).get("ssh_spike") != "OFF"
+    if identity.startswith("docker:required:"):
+        return (cfg.get("enable_docker", True)
+                and identity[len("docker:required:"):] in cfg.get("required_containers", [])
+                and (policy["required_container_down"] or policy["required_container_unhealthy"]))
+    if identity.startswith("docker:unhealthy:"):
+        return cfg.get("enable_docker", True) and policy["other_container_unhealthy"]
+    if identity == "docker:daemon":
+        return cfg.get("enable_docker", True) and policy["docker_daemon_unavailable"]
+    if identity.startswith("docker:public-port:"):
+        return cfg.get("enable_docker", True) and policy["new_public_port"]
+    if identity.startswith("docker:custom:"):
+        return cfg.get("enable_docker_logs", True) and policy["custom_log_rule"]
+    if identity.startswith("service:"):
+        return (policy["required_service_inactive"]
+                and identity[len("service:"):] in cfg.get("required_systemd_services", []))
+    if identity.startswith("disk:"):
+        return cfg.get("enable_disks", True) and policy["disk_critical"] and cfg.get("severity_overrides", {}).get("disk_usage") != "OFF"
+    if identity.endswith(":probe2xx"):
+        return policy["http_probe_2xx"]
+    if identity.endswith(":probes"):
+        return policy["http_probe_volume"]
+    return True
+
+
+def keep_unverified_incident(identity: str, report: Report, cfg: dict) -> bool:
+    """Do not silently clear an incident when its health cannot be verified."""
+    policy = cfg.get("alert_policy", DEFAULTS["alert_policy"])
+    if identity == "ssh:spike":
+        if not cfg.get("enable_ssh", True) or any("SSH journal query incomplete" in x for x in report.coverage):
+            return True
+        failures = report.observations.get("ssh_failure_count_15m")
+        return failures is None or failures > policy["ssh_spike_recovery_count"]
+    if identity.startswith("disk:"):
+        if not cfg.get("enable_disks", True):
+            return True
+        mount = identity[len("disk:"):]
+        percent = report.observations.get("disk_percentages", {}).get(mount)
+        return percent is None or percent > policy["disk_recovery_percent"]
+    if identity.startswith("docker:") and identity != "docker:daemon":
+        return not report.observations.get("docker_query_ok", False)
+    if identity.startswith("service:") and not cfg.get("required_systemd_services"):
+        return True
+    if identity.startswith("host-web:"):
+        return not cfg.get("enable_host_http", True) or bool(report.coverage)
+    return False
+
+
+def evaluate_alert(report: Report, previous: dict, cfg: dict) -> AlertDecision:
+    """Send once per new incident; do not resend a persistent unchanged issue."""
+    policy = cfg.get("alert_policy", DEFAULTS["alert_policy"])
+    old_active = previous.get("active_incidents", {})
+    if not isinstance(old_active, dict):
+        old_active = {}
+    chosen = selected_alert_incidents(report, cfg)
+    updated = {}
+    new_findings = []
+    for identity, finding in chosen.items():
+        if not finding.persistent:
+            # A fresh event in a new, non-overlapping time window is new.
+            new_findings.append(finding)
+            continue
+        prior = old_active.get(identity, {})
+        if not prior:
+            new_findings.append(finding)
+        updated[identity] = {
+            "finding_key": finding.key,
+            "level": finding.level,
+            "message": finding.message,
+            "action": finding.action,
+            "first_seen": prior.get("first_seen", report.end.isoformat()),
+            "last_seen": report.end.isoformat(),
+        }
+    recoveries = []
+    for identity, prior in old_active.items():
+        if identity in updated:
+            continue
+        if not incident_policy_enabled(identity, cfg):
+            continue
+        if keep_unverified_incident(identity, report, cfg):
+            updated[identity] = prior
+            continue
+        if policy["notify_on_recovery"]:
+            recoveries.append(clean(prior.get("message", identity), 250))
+    return AlertDecision(new_findings, recoveries, updated)
+
+
+def merge_ongoing_into_daily(report: Report, state: dict, cfg: dict) -> None:
+    """Show every still-active incident daily, without repeating an existing finding."""
+    active = state.get("alert", {}).get("active_incidents", {})
+    if not isinstance(active, dict):
+        return
+    for identity, item in sorted(active.items()):
+        if not incident_policy_enabled(identity, cfg):
+            continue
+        first_seen = clean(item.get("first_seen", ""), 50)
+        match = None
+        for finding in report.findings:
+            equivalent = incident_identity(finding, cfg) == identity
+            if identity == "ssh:spike" and finding.key == "ssh:failures":
+                equivalent = True
+            if equivalent:
+                match = finding
+                break
+        if match:
+            if item.get("level") == "HIGH":
+                match.level = "HIGH"
+            match.ongoing_since = first_seen
+        else:
+            report.findings.append(Finding(
+                item.get("level", "WARN"), item.get("finding_key", identity),
+                clean(item.get("message", identity), 400), True,
+                clean(item.get("action", remediation_for(identity)), 400), first_seen,
+            ))
 
 
 def send_email(report: Report, cfg: dict) -> None:
@@ -905,9 +1117,26 @@ def build_report(cfg: dict, state: dict, mode: str, end: dt.datetime) -> tuple[R
         start = end - dt.timedelta(hours=default_hours)
     report = Report(host=clean(cfg.get('report_label') or socket.gethostname(), 70),
                     start=start, end=end, mode=mode,
-                    severity_overrides=cfg.get('severity_overrides', {}))
+                    severity_overrides=cfg.get('severity_overrides', {}),
+                    alert_policy=cfg.get('alert_policy', DEFAULTS['alert_policy']))
     if cfg.get('enable_ssh', True):
         analyze_ssh(start, end, report, cfg)
+    if mode == "alert" and cfg.get("enable_ssh", True):
+        policy = cfg.get("alert_policy", DEFAULTS["alert_policy"])
+        current_failures = report.counts.get("SSH authentication failures (log entries)", 0)
+        window_minutes = max((end - start).total_seconds() / 60, 1)
+        rate_15m = current_failures * 15 / window_minutes
+        report.observations["ssh_failure_count_15m"] = rate_15m
+        previous_rate = current_mode.get("last_ssh_rate_15m")
+        already_active = "ssh:spike" in current_mode.get("active_incidents", {})
+        increased = (previous_rate is None or
+                     rate_15m >= max(1, previous_rate) * policy["ssh_spike_increase_factor"])
+        if (policy["ssh_spike"] and rate_15m >= policy["ssh_spike_trigger_count"]
+                and (increased or already_active)):
+            report.add("HIGH", "ssh:spike",
+                       f"Sudden SSH authentication failure surge: {current_failures} log entries "
+                       f"over {window_minutes:.0f} minutes ({rate_15m:.1f} per 15 minutes)",
+                       persistent=True)
     if cfg.get('enable_guards', True):
         analyze_guards(start, end, report)
     if cfg.get('enable_host_http', True):
@@ -934,6 +1163,8 @@ def build_report(cfg: dict, state: dict, mode: str, end: dt.datetime) -> tuple[R
             report.comparison_note = "Comparison omitted: the reporting intervals are not comparable."
         else:
             report.comparison_note = "Baseline unavailable; daily comparison starts after the next report."
+    if mode == "daily":
+        merge_ongoing_into_daily(report, state, cfg)
     return report, current_containers
 
 
@@ -965,20 +1196,25 @@ def main() -> int:
                 return 0
             state = load_state()
             report, containers = build_report(cfg, state, args.mode, end)
-            if args.dry_run:
-                print(report.plaintext())
-                return 0
             mode_state = state.get(args.mode, {})
             if args.mode == "alert":
-                prior_persistent = set(mode_state.get("persistent_alerts", []))
-                current_persistent = {finding.key for finding in report.findings if finding.persistent}
-                notify = [finding for finding in report.findings if not finding.persistent or finding.key not in prior_persistent]
-                should_email = bool(notify)
+                decision = evaluate_alert(report, mode_state, cfg)
+                report.findings = decision.new_findings
+                report.recoveries = decision.recoveries
+                should_email = bool(report.findings or report.recoveries)
+                if args.dry_run:
+                    print(report.plaintext())
+                    print("Alert preview; email would be sent: " + str(should_email))
+                    return 0
                 if should_email:
-                    report.findings = notify
                     send_email(report, cfg)
-                mode_state["persistent_alerts"] = sorted(current_persistent)
+                mode_state["active_incidents"] = decision.active_incidents
+                mode_state["last_ssh_rate_15m"] = report.observations.get("ssh_failure_count_15m", 0)
+                mode_state.pop("persistent_alerts", None)
             else:
+                if args.dry_run:
+                    print(report.plaintext())
+                    return 0
                 send_email(report, cfg)
                 should_email = True
             mode_state["last_checked"] = end.isoformat()
