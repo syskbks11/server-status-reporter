@@ -750,7 +750,9 @@ def parse_docker(config: dict, report: Report, previous: dict, start: dt.datetim
             if item.split(' -> ', 1)[0].rsplit(':', 1)[-1].isdigit()
             if int(item.split(' -> ', 1)[0].rsplit(':', 1)[-1]) not in config.get('allowed_public_ports', [])
         }
-        if unapproved_ports:
+        # An empty allowlist means the host has not configured its port policy.
+        # Report exposed bindings, but do not treat all of them as emergencies.
+        if unapproved_ports and config.get('allowed_public_ports'):
             report.add("HIGH", f"docker:public-port:{name}",
                        f"Unapproved non-loopback Docker port: {top(collections.Counter({v: 1 for v in unapproved_ports}), 2)}",
                        persistent=True)
@@ -793,6 +795,10 @@ def parse_docker(config: dict, report: Report, previous: dict, start: dt.datetim
         if (old_name not in states and old_item.get("status") == "running"
                 and old_name not in ignore and old_name not in config.get("required_containers", [])):
             report.add("HIGH", f"docker:missing:{old_name}", f"Previously running Docker container is missing: {old_name}", persistent=True)
+    if exposed and not config.get('allowed_public_ports'):
+        report.coverage.append(
+            "Docker port allowlist not configured; published ports are listed but no port policy alerts are generated"
+        )
     report.set_metric("Docker containers (running/stopped/unhealthy)", f"{running}/{stopped}/{unhealthy}")
     report.set_metric("Docker non-loopback published port bindings", len(exposed))
     report.set_metric("Docker application error indicators", sum(app_errors.values()))

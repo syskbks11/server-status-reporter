@@ -29,7 +29,11 @@ sudo server-security-report --dry-run
 sudo systemctl enable --now security-report-daily.timer security-report-alert.timer
 ```
 
-The setup prompts for SMTP hostname, sender, recipients, app password (hidden input), a generic report label, host log paths, Docker container names, exclusions, detection rules, notification thresholds and severity policy. Press Enter to retain a default, `CLEAR` to clear list fields, and `EDIT` to replace regex lists. For Gmail, the default SMTP service is `smtp.gmail.com:587`, and a Google app password may be used if supported by the account. A standard sign-in password should not be used.
+**Quick initial setup:** `--init` asks only for (1) the SMTP sender address, (2) one or more comma-separated recipients, and (3) the app password (entered twice with hidden input). Confirm saving, and the remaining settings use built-in defaults. For Gmail, the default SMTP service is `smtp.gmail.com:587` with STARTTLS; a Google app password may be used if supported by the account. A standard sign-in password should not be used.
+
+The initial settings enable SSH, guard, host HTTP, Docker and disk monitoring. Host HTTP access-log paths, required container/service names and trusted networks start empty and need per-host configuration for full coverage. **An empty approved-port list is not a deny-all policy:** Docker ports are reported in daily emails, but unapproved-port emergency alerts are disabled until an allowlist is configured. Set these host-specific fields before relying on the alerts.
+
+To change a setting later, use `--configure`, choose a category, then select **one numbered setting** to edit. Enter `0` to return, or choose `8` from the main menu to validate and save. Each edit stays in memory until the final save; a validation error returns to the menu rather than discarding all edits. Lists accept comma-separated entries, `CLEAR` empties a list, and regex lists support `KEEP`, `CLEAR`, or `EDIT`.
 
 **Do not edit Python source code to store credentials or host-specific configuration.** The script reads the private JSON settings at runtime. On separate servers, run the setup separately.
 
@@ -43,7 +47,7 @@ sudo server-security-report --test-email
 sudo server-security-report --mode alert --dry-run
 ```
 
-Select **7) Emergency notification policy** to change urgent notification conditions, SSH surge trigger/recovery thresholds, critical disk trigger/recovery percentages, and recovery email behavior. Select **3) Thresholds** for regular daily-report warning thresholds. All thresholds, exceptions and emergency flags live together in the private **`/etc/server-security-report/config.json`** file. No Python edit is needed.
+Select **4) Emergency notification policy**, then the numbered setting you want to edit. Select **3) Daily report thresholds** to adjust regular warning levels. **1) SMTP delivery and recipients** controls delivery addresses and the app password. **2) Monitoring sources and targets** controls container names, service units, HTTP access-log paths, and the approved-port list. All thresholds, exceptions and emergency flags live together in the private **`/etc/server-security-report/config.json`** file. No Python edit is needed.
 
 `--show` redacts account addresses, log paths, service names, networks and match expressions, and never prints the SMTP password. `--validate` checks configuration fields and secure secret permissions. The monitoring script accepts `--config /absolute/path/config.json` for advanced deployments; the default is `/etc/server-security-report/config.json`.
 
@@ -150,6 +154,6 @@ A public repository cannot guarantee anonymity; Git metadata, account associatio
 - Custom regexes are evaluated against untrusted logs; use simple, bounded expressions and test carefully.
 - A known/trusted SSH source suppresses emergency root-login notifications by default, but its root logins still appear as warnings in the daily report. Configure trusted SSH networks carefully.
 - Severity `OFF` suppresses an alert but does not delete or rewrite its underlying event logs.
-- Configure required containers, required services, trusted SSH networks, and allowed public ports per host before enabling timers; otherwise baseline conditions may trigger first-run alerts.
-- Upgrading from an older release preserves the local configuration. The new `alert_policy` is filled with defaults; review it via `sudo server-security-setup --configure` (menu 7). The incident state starts a new baseline because older state files lack `active_incidents`, so existing outages may produce a one-time notification after upgrade.
+- Configure required containers, required services, HTTP log paths, trusted SSH networks, and approved public ports per host before relying on coverage. Defaults do not infer local inventory. An empty approved-port list disables unapproved-port alerts while still listing external Docker bindings in daily reports.
+- Upgrading from an older release preserves the local configuration. The new `alert_policy` is filled with defaults; review it via `sudo server-security-setup --configure` (menu 4). The incident state starts a new baseline because older state files lack `active_incidents`, so existing outages may produce a one-time notification after upgrade.
 - Check for false positives and adjust per-host rules through the setup wizard before enabling timers.

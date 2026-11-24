@@ -1,5 +1,14 @@
 # Changelog
 
+## v4.1 — Quick setup and selective editing
+
+- Reduce initial setup to SMTP sender, recipients, and hidden app password; use defaults for all monitoring categories and thresholds.
+- Introduce item-level configuration menus so operators can change only the settings they choose.
+- Preserve the configured minimum emergency severity when the input is blank.
+- Keep the editing session open if validation fails instead of discarding staged changes.
+- Avoid unapproved-port emergency alerts before an explicit Docker port allowlist is configured; published ports remain visible in daily reports.
+- Expand regression tests for quick setup, menu selection, unchanged settings, and default port policy.
+
 ## v4 — Incident-based emergency notifications
 
 - Prevent routine SSH failures and HTTP scans from triggering emergency mail by default.

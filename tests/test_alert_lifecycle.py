@@ -225,6 +225,7 @@ class AlertLifecycleTests(unittest.TestCase):
 
     def test_unapproved_public_port_is_persistent_and_only_one_finding(self):
         self.cfg['enable_docker_logs'] = False
+        self.cfg['allowed_public_ports'] = [443]
         report = self.report()
         inspect = [{'Name':'/app-a', 'Id':'test-id', 'RestartCount':0,
                     'State':{'Status':'running'},
@@ -245,6 +246,26 @@ class AlertLifecycleTests(unittest.TestCase):
         second = monitor.evaluate_alert(report, {'active_incidents':first.active_incidents}, self.cfg)
         self.assertEqual(len(first.new_findings), 1)
         self.assertFalse(second.new_findings)
+
+    def test_default_port_policy_does_not_alert_on_existing_bindings(self):
+        self.cfg['enable_docker_logs'] = False
+        self.cfg['allowed_public_ports'] = []
+        report = self.report()
+        inspect = [{'Name':'/app-a', 'Id':'test-id', 'RestartCount':0,
+                    'State':{'Status':'running'},
+                    'HostConfig':{'LogConfig':{'Type':'none'},'Binds':[],'Privileged':False},
+                    'NetworkSettings':{'Ports':{'80/tcp':[{'HostIp':'0.0.0.0','HostPort':'8080'}]}}}]
+        import json
+        def fake_command(args, **kwargs):
+            if args[:3] == ['docker', 'ps', '-aq']:
+                return monitor.CommandResult('test-id', True)
+            return monitor.CommandResult(json.dumps(inspect), True)
+        with patch.object(monitor.shutil, 'which', return_value='/usr/bin/docker'), \
+             patch.object(monitor, 'command', side_effect=fake_command):
+            monitor.parse_docker(self.cfg, report, {}, report.start, report.end)
+        self.assertFalse(any('public-port:' in f.key for f in report.findings))
+        self.assertTrue(any('allowlist not configured' in note for note in report.coverage))
+        self.assertFalse(monitor.evaluate_alert(report, {}, self.cfg).new_findings)
 
     def test_stale_ssh_interval_is_normalized_to_rate(self):
         self.cfg.update({'enable_guards':False, 'enable_host_http':False,

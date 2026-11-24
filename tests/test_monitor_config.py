@@ -133,14 +133,65 @@ class ConfigTests(unittest.TestCase):
             monitor.parse_docker(config, report, {}, report.start, report.end)
             self.assertFalse(any(call[:2] == ['docker', 'logs'] for call in commands))
 
-    def test_configure_menu_can_edit_without_exposing_email(self):
+    def test_initial_setup_asks_only_for_required_smtp_fields(self):
+        cfg = cfgmod.defaults()
+        staged = [None]
+        answers = iter(['sender@example.invalid', 'one@example.invalid, two@example.invalid'])
+        with patch('builtins.input', side_effect=lambda prompt='': next(answers)), \
+             patch.object(setup, 'secret_status', return_value='missing'), \
+             patch.object(setup, 'ask_password') as password:
+            setup.initial_smtp(cfg, staged)
+        self.assertEqual(cfg['smtp_host'], 'smtp.gmail.com')
+        self.assertEqual(cfg['smtp_port'], 587)
+        self.assertEqual(cfg['mail_to'], ['one@example.invalid', 'two@example.invalid'])
+        self.assertEqual(cfg['alert_policy']['minimum_level'], 'HIGH')
+        self.assertTrue(cfg['enable_docker'])
+        password.assert_called_once_with(staged, required=True)
+        cfg = cfgmod.validate(cfg)
+        self.assertEqual(cfg['ssh_failure_threshold'], 30)
+
+    def test_blank_choice_preserves_current_emergency_level(self):
+        with patch('builtins.input', return_value=''):
+            self.assertEqual(setup.ask_choice('Emergency level', 'HIGH', ('HIGH', 'WARN')), 'HIGH')
+
+    def test_item_menu_only_updates_selected_threshold(self):
         cfg = self.valid()
         staged = [None]
-        answers = iter(['smtp.gmail.com', '587', 'sender@example.invalid', '', 'n', 'host-a'])
+        old = cfg['ssh_failure_threshold']
+        answers = iter(['2', '42', '0'])
         with patch('builtins.input', side_effect=lambda prompt='': next(answers)):
-            setup.email_section(cfg, staged)
-        self.assertEqual(cfg['report_label'], 'host-a')
-        self.assertIsNone(staged[0])
+            setup.section_menu(cfg, staged, 'Thresholds', setup.THRESHOLD_FIELDS)
+        self.assertEqual(cfg['web_probe_threshold'], 42)
+        self.assertEqual(cfg['ssh_failure_threshold'], old)
+
+    def test_emergency_level_can_be_kept_or_changed_individually(self):
+        cfg = self.valid()
+        staged = [None]
+        fields = [('alert_policy.minimum_level', 'Minimum emergency level', 'level')]
+        answers = iter(['1', '', '1', 'WARN', '0'])
+        with patch('builtins.input', side_effect=lambda prompt='': next(answers)):
+            setup.section_menu(cfg, staged, 'Emergency policy', fields)
+        self.assertEqual(cfg['alert_policy']['minimum_level'], 'WARN')
+
+    def test_edit_mode_does_not_force_visiting_all_fields(self):
+        cfg = self.valid()
+        answers = iter(['4', '14', '', '0', '8'])
+        with patch('builtins.input', side_effect=lambda prompt='': next(answers)), \
+             patch.object(setup, 'load', return_value=cfg), \
+             patch.object(setup, 'save_config', return_value=True) as save:
+            result = setup.interactive(Path('/tmp/config.json'), initial=False)
+        self.assertEqual(result, 0)
+        self.assertEqual(cfg['alert_policy']['minimum_level'], 'HIGH')
+        self.assertEqual(save.call_count, 1)
+
+    def test_failed_save_returns_to_menu(self):
+        cfg = self.valid()
+        answers = iter(['8', '0'])
+        with patch('builtins.input', side_effect=lambda prompt='': next(answers)), \
+             patch.object(setup, 'load', return_value=cfg), \
+             patch.object(setup, 'save_config', return_value=False):
+            result = setup.interactive(Path('/tmp/config.json'), initial=False)
+        self.assertEqual(result, 0)
 
     @unittest.skipUnless(os.geteuid() == 0, 'Root is required for secure-write round-trip')
     def test_secure_configuration_round_trip(self):
