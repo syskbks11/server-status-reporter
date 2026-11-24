@@ -1,0 +1,35 @@
+Subject: [Daily Security][URGENT] host-a - 2026-01-02 07:00
+
+SECURITY REPORT - host-a
+Status: URGENT - Immediate verification recommended
+Mode: DAILY
+Period: 2026-01-01 07:00 +0000 - 2026-01-02 07:00 +0000
+
+AT A GLANCE
+  SSH authentication failures (log entries): 46 | previous: 15, change: +31
+  SSH successful authentications: 2 | previous: 2, change: 0
+  SSHGuard/Fail2ban block events: 3 | previous: 1, change: +2
+  Host suspicious HTTP paths: 12 | previous: 8, change: +4
+  Docker containers (running/stopped/unhealthy): 3/1/1
+  Docker application error indicators: 4 | previous: 1, change: +3
+  Local filesystems at or above 90%: 0 | previous: 0, change: 0
+
+FINDINGS AND NEXT STEPS
+  [HIGH] Unhealthy Docker container: app-a
+    Next step: Review docker inspect health output and docker logs; check the application dependencies.
+  [WARN] SSH failures: 46 log entries; top source: 203.0.113.20 (31)
+    Next step: Review the SSH failure sources and rate limits; confirm SSHGuard or Fail2ban is working.
+
+IP ACTIVITY - TOP SOURCES
+  203.0.113.20: SSH failed: 31
+  192.0.2.10: SSH accepted: 2
+
+DOCKER CONTAINERS
+  Running: 3; stopped: 1; unhealthy: 1
+  app-a: status=running, health=unhealthy
+
+Monitoring coverage: no warnings
+
+Notes: HTTP 2xx on a suspicious path does not prove compromise.
+Host and Docker HTTP logs can represent the same request; do not add their counts.
+Container-log IPs can be a proxy address; verify client IPs in the host reverse-proxy log.

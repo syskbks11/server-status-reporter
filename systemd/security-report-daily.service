@@ -1,0 +1,13 @@
+[Unit]
+Description=Daily host and Docker security report
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/sbin/server-security-report --mode daily
+TimeoutStartSec=15min
+
+[Install]
+WantedBy=multi-user.target

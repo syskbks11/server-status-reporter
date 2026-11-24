@@ -1,0 +1,10 @@
+[Unit]
+Description=Check for security alerts every 15 minutes
+
+[Timer]
+OnCalendar=*:0/15
+Persistent=true
+Unit=security-report-alert.service
+
+[Install]
+WantedBy=timers.target
