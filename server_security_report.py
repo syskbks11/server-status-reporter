@@ -1188,11 +1188,8 @@ def main() -> int:
         cfg = validate(json.loads(secure_read(Path(args.config))))
         LOCK_PATH.parent.mkdir(mode=0o755, exist_ok=True, parents=True)
         with open(LOCK_PATH, "a+", encoding="ascii") as lock:
-            try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                print("Another monitor instance is running")
-                return 0
+            # Wait for a concurrent monitor run rather than skipping a scheduled report.
+            fcntl.flock(lock, fcntl.LOCK_EX)
             end = dt.datetime.now().astimezone()
             if args.test_email:
                 report = Report(clean(cfg.get("report_label") or socket.gethostname(), 70), end - dt.timedelta(minutes=1), end, "test")
